@@ -53,10 +53,12 @@ TARGET_BOOTLOADER_BOARD_NAME := bengal
 TARGET_BOARD_PLATFORM := bengal
 TARGET_NO_BOOTLOADER := true
 
-# Boot Image Header v4 (matches stock recovery.img)
+# Boot Image Header v4 (matches stock recovery.img, kernel_size=0)
 BOARD_BOOTIMG_HEADER_VERSION := 4
 BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOTIMG_HEADER_VERSION)
 BOARD_RAMDISK_USE_LZ4 := true
+BOARD_KERNEL_IMAGE_NAME := Image
+TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt/kernel
 
 # Partitions (exact sizes from stock rawprogram0.xml & rawprogram4.xml)
 BOARD_FLASH_BLOCK_SIZE := 262144 # (BOARD_KERNEL_PAGESIZE * 64)
