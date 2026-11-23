@@ -18,7 +18,6 @@ AB_OTA_PARTITIONS += \
     product \
     recovery \
     system \
-    system_dlkm \
     system_ext \
     vbmeta \
     vbmeta_system \
@@ -75,7 +74,7 @@ TARGET_COPY_OUT_VENDOR := vendor
 # Dynamic Partitions (12 GiB super)
 BOARD_SUPER_PARTITION_SIZE := 12884901888
 BOARD_SUPER_PARTITION_GROUPS := qti_dynamic_partitions
-BOARD_QTI_DYNAMIC_PARTITIONS_PARTITION_LIST := system system_ext vendor vendor_dlkm system_dlkm odm product
+BOARD_QTI_DYNAMIC_PARTITIONS_PARTITION_LIST := system system_ext vendor vendor_dlkm odm product
 BOARD_QTI_DYNAMIC_PARTITIONS_SIZE := 12880707584
 
 # Recovery
