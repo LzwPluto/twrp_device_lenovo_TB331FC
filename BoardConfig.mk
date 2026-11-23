@@ -28,8 +28,8 @@ AB_OTA_PARTITIONS += \
 
 # Dedicated recovery_a/recovery_b partition (Header v4, ramdisk-only, kernel_size=0)
 BOARD_USES_RECOVERY_AS_BOOT := false
+TARGET_NO_RECOVERY := false
 BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE := true
-TARGET_NO_KERNEL := true
 
 # Architecture
 TARGET_ARCH := arm64
