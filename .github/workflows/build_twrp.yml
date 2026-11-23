@@ -64,6 +64,7 @@ jobs:
           mkdir -p ~/twrp/device/lenovo/TB331FC
           cp -r "${{ github.workspace }}/twrp_dt_checkout/." ~/twrp/device/lenovo/TB331FC/
           rm -rf ~/twrp/device/lenovo/TB331FC/.git ~/twrp/device/lenovo/TB331FC/.github
+          chmod +x ~/twrp/device/lenovo/TB331FC/recovery/root/vendor/bin/qseecomd ~/twrp/device/lenovo/TB331FC/recovery/root/vendor/bin/hw/* 2>/dev/null || true
           ls -la ~/twrp/device/lenovo/TB331FC
 
       - name: Build TWRP recovery.img
