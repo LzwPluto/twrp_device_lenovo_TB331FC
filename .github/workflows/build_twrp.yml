@@ -76,7 +76,7 @@ jobs:
           TARGET="${{ github.event.inputs.build_target || 'recoveryimage' }}"
           mka "$TARGET" -j$(nproc --all)
 
-      - name: Repack recovery.img for TB331FC ABL (pure LZ4 legacy <= 20.9 MiB + clean v4 header)
+      - name: Repack recovery.img for TB331FC ABL (prefer LZ4 legacy, fallback gzip/zstd <= 20.9 MiB + clean v4 header)
         run: |
           python3 - << 'EOF'
           import os, shutil, struct, subprocess
@@ -149,17 +149,35 @@ jobs:
                   if fn not in ("en.xml", "zh_CN.xml"):
                       os.remove(os.path.join(lang_dir, fn))
 
-          # Repack as root-owned (0:0) cpio + pure LZ4 legacy -9 (REQUIRED to match vendor_ramdisk!)
+          # Repack as root-owned (0:0) cpio. Prefer pure LZ4 legacy (matches vendor_ramdisk), but LZ4
+          # compresses much worse than gzip/zstd, so fall back to the smallest candidate that still
+          # fits the ABL combined limit (stock kernel has CONFIG_RD_GZIP=y and CONFIG_RD_ZSTD=y).
           cpio_out = os.path.join(work, "slim.cpio")
           lz4_out = os.path.join(work, "slim.lz4")
           subprocess.check_call(f"cd {root} && find . | cpio -o -H newc -R 0:0 --quiet > {cpio_out}", shell=True)
-          subprocess.check_call(f"lz4 -l -9 -f {cpio_out} {lz4_out}", shell=True)
 
-          new_rd = open(lz4_out, "rb").read()
-          new_rsize = len(new_rd)
-          combined = new_rsize + 11628801
-          print(f"Repacked LZ4 legacy = {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) | +vendor = {combined/1048576:.2f} MiB (limit 32.00 MiB)")
-          assert combined < 33554432, f"Combined ramdisk exceeds ABL 32 MiB limit: {combined/1048576:.2f} MiB!"
+          VENDOR_RD = 11628801          # vendor_ramdisk (vendor_boot) contribution to the ABL total
+          ABL_LIMIT = 33554432          # ABL combined ramdisk hard limit
+          RD_MAX = ABL_LIMIT - VENDOR_RD
+          cands = []
+          subprocess.check_call(f"lz4 -l -9 -f {cpio_out} {lz4_out}", shell=True)
+          cands.append(("lz4-legacy-9", lz4_out, os.path.getsize(lz4_out)))
+          gz_out = os.path.join(work, "slim.gz")
+          zst_out = os.path.join(work, "slim.zst")
+          subprocess.check_call(f"gzip -9 -c {cpio_out} > {gz_out}", shell=True)
+          cands.append(("gzip-9", gz_out, os.path.getsize(gz_out)))
+          subprocess.check_call(f"zstd -19 -T0 -f {cpio_out} -o {zst_out}", shell=True)
+          cands.append(("zstd-19", zst_out, os.path.getsize(zst_out)))
+          for nm, _p, sz in cands:
+              print(f"  candidate {nm:12s} = {sz} bytes ({sz/1048576:.2f} MiB) | +vendor = {(sz+VENDOR_RD)/1048576:.2f} MiB")
+          fitting = [c for c in cands if c[2] <= RD_MAX]
+          assert fitting, "No ramdisk compression fits the ABL limit: " + ", ".join(f"{n}={s}" for n, _p, s in cands)
+          lz4_ok = [c for c in fitting if c[0].startswith("lz4")]
+          chosen_name, chosen_path, new_rsize = lz4_ok[0] if lz4_ok else min(fitting, key=lambda c: c[2])
+          combined = new_rsize + VENDOR_RD
+          print(f"Selected {chosen_name}: {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) | +vendor = {combined/1048576:.2f} MiB (limit 32.00 MiB)")
+          with open(chosen_path, "rb") as f:
+              new_rd = f.read()
 
           # Build clean Android Boot Header v4 matching stock recovery.img exactly
           new_hdr = bytearray(4096)
