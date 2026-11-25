@@ -108,11 +108,25 @@ jobs:
 
           subprocess.check_call(f"cd {root} && cpio -idmu --quiet < {cpio_in}", shell=True)
 
-          # Trim non-essential large files while keeping libchrome.so, touch, MTP, and FBE v2 crypto intact
+          # Trim non-essential files while keeping libchrome.so, ICU, touch, MTP, and FBE v2 crypto intact
           for rel in [
               "system/bin/update_engine_sideload",
               "system/bin/fastbootd",
               "system/bin/sload_f2fs",
+              "system/bin/minadbd",
+              "system/bin/avbctl",
+              "system/bin/zip",
+              "system/bin/awk",
+              "system/bin/bc",
+              "system/bin/charger",
+              "system/bin/keystore_cli_v2",
+              "system/bin/exfat-fuse",
+              "system/bin/pigz",
+              "system/bin/bu",
+              "system/bin/ziptool",
+              "system/bin/ozip_decrypt",
+              "system/bin/android.hardware.health@2.0-service",
+              "system/bin/android.hardware.health@2.1-service",
               "system/lib64/libclang_rt.ubsan_standalone-aarch64-android.so",
               "ramdisk-files.sha256sum",
               "ramdisk-files.txt",
@@ -121,6 +135,12 @@ jobs:
               if os.path.exists(p):
                   os.remove(p)
                   print("Trimmed:", rel)
+
+          for rel_dir in ["res/images", "system/usr/share"]:
+              d = os.path.join(root, rel_dir)
+              if os.path.isdir(d):
+                  shutil.rmtree(d)
+                  print("Trimmed dir:", rel_dir)
 
           # Keep only English & Simplified Chinese in twres/languages
           lang_dir = os.path.join(root, "twres", "languages")
