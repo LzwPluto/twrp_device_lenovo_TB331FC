@@ -34,7 +34,7 @@ jobs:
             git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
             lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev \
             libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
-            squashfs-tools xsltproc zip zlib1g-dev python-is-python3 cpio aria2
+            squashfs-tools xsltproc zip zlib1g-dev python-is-python3 cpio aria2 zstd
           mkdir -p ~/bin
           curl -s https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
           chmod a+x ~/bin/repo
@@ -76,17 +76,99 @@ jobs:
           TARGET="${{ github.event.inputs.build_target || 'recoveryimage' }}"
           mka "$TARGET" -j$(nproc --all)
 
-      - name: Verify output image header
+      - name: Repack recovery.img for TB331FC ABL (<= 20.9 MiB ramdisk limit + clean v4 header)
         run: |
-          ls -lh ~/twrp/out/target/product/TB331FC/*.img
-          python3 -c '
-          import struct
-          with open("/home/runner/twrp/out/target/product/TB331FC/recovery.img", "rb") as f:
-              h = f.read(64)
+          python3 - << 'EOF'
+          import os, struct, subprocess
+
+          out_dir = "/home/runner/twrp/out/target/product/TB331FC"
+          src_img = os.path.join(out_dir, "recovery.img")
+          work = "/tmp/repack_rec"
+          os.makedirs(work, exist_ok=True)
+
+          with open(src_img, "rb") as f:
+              hdr = bytearray(f.read(4096))
+              rsize = struct.unpack("<I", hdr[12:16])[0]
+              rd_raw = f.read(rsize)
+
+          print(f"Original built ramdisk_size = {rsize} bytes ({rsize/1048576:.2f} MiB)")
+
+          # Decompress ramdisk to raw cpio (supports gzip or lz4)
+          rd_in = os.path.join(work, "rd.in")
+          cpio_path = os.path.join(work, "rd.cpio")
+          with open(rd_in, "wb") as f:
+              f.write(rd_raw)
+
+          if rd_raw[:2] == b"\x1f\x8b":
+              subprocess.check_call(f"gzip -dc {rd_in} > {cpio_path}", shell=True)
+          elif rd_raw[:4] == b"\x02\x21\x4c\x18":
+              subprocess.check_call(f"lz4 -dc {rd_in} > {cpio_path}", shell=True)
+          else:
+              cpio_path = rd_in
+
+          print(f"Uncompressed cpio size = {os.path.getsize(cpio_path)} bytes")
+
+          # Try gzip -9 first; fall back to zstd -19 (stock kernel has CONFIG_RD_GZIP=y & CONFIG_RD_ZSTD=y)
+          gz_path = os.path.join(work, "rd.gz")
+          zst_path = os.path.join(work, "rd.zst")
+          subprocess.check_call(f"gzip -9 -c {cpio_path} > {gz_path}", shell=True)
+          subprocess.check_call(f"zstd -19 -T0 -f {cpio_path} -o {zst_path}", shell=True)
+
+          gz_sz = os.path.getsize(gz_path)
+          zst_sz = os.path.getsize(zst_path)
+          print(f"gzip -9 size  = {gz_sz} bytes ({gz_sz/1048576:.2f} MiB)")
+          print(f"zstd -19 size = {zst_sz} bytes ({zst_sz/1048576:.2f} MiB)")
+
+          # ABL combined limit: 32 MiB - 11.09 MiB (vendor_ramdisk) = 20.91 MiB max for recovery ramdisk
+          LIMIT = 20_500_000
+          if gz_sz <= LIMIT:
+              chosen = gz_path
+              method = "gzip -9"
+          elif zst_sz <= LIMIT:
+              chosen = zst_path
+              method = "zstd -19"
+          else:
+              raise RuntimeError(f"Ramdisk still too large! gz={gz_sz}, zst={zst_sz}, limit={LIMIT}")
+
+          with open(chosen, "rb") as f:
+              new_rd = f.read()
+          new_rsize = len(new_rd)
+          print(f"Selected {method}: {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) -> combined with vendor_ramdisk = {(new_rsize+11628801)/1048576:.2f} MiB <= 32 MiB OK!")
+
+          # Build clean Android Boot Header v4 matching stock recovery.img exactly:
+          # kernel_size=0, ramdisk_size=new_rsize, os_version=0, header_size=1584, header_version=4, signature_size=0
+          new_hdr = bytearray(4096)
+          new_hdr[0:8] = b"ANDROID!"
+          struct.pack_into("<IIII", new_hdr, 8, 0, new_rsize, 0, 1584)
+          struct.pack_into("<I", new_hdr, 40, 4)
+          # signature_size at 1580 stays 0
+
+          pad = (-new_rsize) % 4096
+          repacked = os.path.join(out_dir, "recovery.img")
+          with open(repacked, "wb") as f:
+              f.write(new_hdr)
+              f.write(new_rd)
+              f.write(b"\x00" * pad)
+
+          # Add stock-compatible AVB hash footer (Algorithm: NONE, partition_size=100663296)
+          avbtool = "/home/runner/twrp/out/host/linux-x86/bin/avbtool"
+          if os.path.exists(avbtool):
+              subprocess.check_call([
+                  avbtool, "add_hash_footer",
+                  "--image", repacked,
+                  "--partition_size", "100663296",
+                  "--partition_name", "recovery",
+                  "--algorithm", "NONE",
+              ])
+              print("Added stock-compatible AVB hash footer (96 MiB, Algorithm NONE)")
+
+          with open(repacked, "rb") as f:
+              h = f.read(1600)
           v = struct.unpack("<I", h[40:44])[0]
-          ksize, rsize, osv, hsz = struct.unpack("<IIII", h[8:24])
-          print(f"magic={h[:8]} hdr_ver={v} kernel_size={ksize} ramdisk_size={rsize}")
-          '
+          ksize, rs, osv, hsz = struct.unpack("<IIII", h[8:24])
+          sigsz = struct.unpack("<I", h[1580:1584])[0]
+          print(f"FINAL VERIFY: magic={h[:8]} hdr_ver={v} ksize={ksize} rsize={rs} os_ver={osv} hsz={hsz} sigsz={sigsz} file_size={os.path.getsize(repacked)}")
+          EOF
 
       - name: Upload recovery.img artifact
         uses: actions/upload-artifact@v4
