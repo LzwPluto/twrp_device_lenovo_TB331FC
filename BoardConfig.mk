@@ -53,9 +53,10 @@ TARGET_BOOTLOADER_BOARD_NAME := bengal
 TARGET_BOARD_PLATFORM := bengal
 TARGET_NO_BOOTLOADER := true
 
-# Boot Image Header v4 (matches stock recovery.img, kernel_size=0)
+# Boot Image Header v4 (matches stock recovery.img, kernel_size=0, LZ4 legacy)
 BOARD_BOOTIMG_HEADER_VERSION := 4
 BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOTIMG_HEADER_VERSION)
+BOARD_RAMDISK_USE_LZ4 := true
 BOARD_KERNEL_IMAGE_NAME := Image
 TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt/kernel
 
@@ -93,9 +94,10 @@ PLATFORM_SECURITY_PATCH := 2099-12-31
 VENDOR_SECURITY_PATCH := 2099-12-31
 PLATFORM_VERSION := 16.1.0
 
-# TWRP Configuration (trimmed to stay safely under ABL 32 MiB combined ramdisk limit)
+# TWRP Configuration (180 deg rotation, real KTZ8866 bkl-bl backlight, trimmed for ABL 32 MiB LZ4 limit)
 DEVICE_SCREEN_WIDTH := 1200
 DEVICE_SCREEN_HEIGHT := 1920
+TW_ROTATION := 180
 TW_THEME := portrait_hdpi
 TW_EXTRA_LANGUAGES := false
 TW_EXCLUDE_TWRPAPP := true
@@ -103,17 +105,15 @@ TW_EXCLUDE_BASH := true
 TW_EXCLUDE_NANO := true
 TW_EXCLUDE_PYTHON := true
 TW_EXCLUDE_APEX := true
-TW_NO_SCREEN_BLANK := true
 TW_INPUT_BLACKLIST := "hbtp_vm"
 TW_USE_TOOLBOX := true
 TW_INCLUDE_RESETPROP := true
 TW_INCLUDE_LIBRESETPROP := true
-TW_INCLUDE_FASTBOOTD := true
 TW_HAS_MTP := true
 TW_LOAD_VENDOR_BOOT_MODULES := true
-TW_BRIGHTNESS_PATH := "/sys/class/backlight/panel0-backlight/brightness"
-TW_MAX_BRIGHTNESS := 2047
-TW_DEFAULT_BRIGHTNESS := 1000
+TW_BRIGHTNESS_PATH := "/sys/class/backlight/bkl-bl/brightness"
+TW_MAX_BRIGHTNESS := 4095
+TW_DEFAULT_BRIGHTNESS := 1800
 TWRP_INCLUDE_LOGCAT := true
 TARGET_USES_LOGD := true
 

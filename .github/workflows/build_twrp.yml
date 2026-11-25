@@ -76,15 +76,16 @@ jobs:
           TARGET="${{ github.event.inputs.build_target || 'recoveryimage' }}"
           mka "$TARGET" -j$(nproc --all)
 
-      - name: Repack recovery.img for TB331FC ABL (<= 20.9 MiB ramdisk limit + clean v4 header)
+      - name: Repack recovery.img for TB331FC ABL (pure LZ4 legacy <= 20.9 MiB + clean v4 header)
         run: |
           python3 - << 'EOF'
-          import os, struct, subprocess
+          import os, shutil, struct, subprocess
 
           out_dir = "/home/runner/twrp/out/target/product/TB331FC"
           src_img = os.path.join(out_dir, "recovery.img")
           work = "/tmp/repack_rec"
-          os.makedirs(work, exist_ok=True)
+          root = os.path.join(work, "root")
+          os.makedirs(root, exist_ok=True)
 
           with open(src_img, "rb") as f:
               hdr = bytearray(f.read(4096))
@@ -93,55 +94,58 @@ jobs:
 
           print(f"Original built ramdisk_size = {rsize} bytes ({rsize/1048576:.2f} MiB)")
 
-          # Decompress ramdisk to raw cpio (supports gzip or lz4)
           rd_in = os.path.join(work, "rd.in")
-          cpio_path = os.path.join(work, "rd.cpio")
+          cpio_in = os.path.join(work, "rd.cpio")
           with open(rd_in, "wb") as f:
               f.write(rd_raw)
 
-          if rd_raw[:2] == b"\x1f\x8b":
-              subprocess.check_call(f"gzip -dc {rd_in} > {cpio_path}", shell=True)
-          elif rd_raw[:4] == b"\x02\x21\x4c\x18":
-              subprocess.check_call(f"lz4 -dc {rd_in} > {cpio_path}", shell=True)
+          if rd_raw[:4] == b"\x02\x21\x4c\x18":
+              subprocess.check_call(f"lz4 -dc {rd_in} > {cpio_in}", shell=True)
+          elif rd_raw[:2] == b"\x1f\x8b":
+              subprocess.check_call(f"gzip -dc {rd_in} > {cpio_in}", shell=True)
           else:
-              cpio_path = rd_in
+              cpio_in = rd_in
 
-          print(f"Uncompressed cpio size = {os.path.getsize(cpio_path)} bytes")
+          subprocess.check_call(f"cd {root} && cpio -idmu --quiet < {cpio_in}", shell=True)
 
-          # Try gzip -9 first; fall back to zstd -19 (stock kernel has CONFIG_RD_GZIP=y & CONFIG_RD_ZSTD=y)
-          gz_path = os.path.join(work, "rd.gz")
-          zst_path = os.path.join(work, "rd.zst")
-          subprocess.check_call(f"gzip -9 -c {cpio_path} > {gz_path}", shell=True)
-          subprocess.check_call(f"zstd -19 -T0 -f {cpio_path} -o {zst_path}", shell=True)
+          # Trim non-essential large files while keeping libchrome.so, touch, MTP, and FBE v2 crypto intact
+          for rel in [
+              "system/bin/update_engine_sideload",
+              "system/bin/fastbootd",
+              "system/bin/sload_f2fs",
+              "system/lib64/libclang_rt.ubsan_standalone-aarch64-android.so",
+              "ramdisk-files.sha256sum",
+              "ramdisk-files.txt",
+          ]:
+              p = os.path.join(root, rel)
+              if os.path.exists(p):
+                  os.remove(p)
+                  print("Trimmed:", rel)
 
-          gz_sz = os.path.getsize(gz_path)
-          zst_sz = os.path.getsize(zst_path)
-          print(f"gzip -9 size  = {gz_sz} bytes ({gz_sz/1048576:.2f} MiB)")
-          print(f"zstd -19 size = {zst_sz} bytes ({zst_sz/1048576:.2f} MiB)")
+          # Keep only English & Simplified Chinese in twres/languages
+          lang_dir = os.path.join(root, "twres", "languages")
+          if os.path.isdir(lang_dir):
+              for fn in os.listdir(lang_dir):
+                  if fn not in ("en.xml", "zh_CN.xml"):
+                      os.remove(os.path.join(lang_dir, fn))
 
-          # ABL combined limit: 32 MiB - 11.09 MiB (vendor_ramdisk) = 20.91 MiB max for recovery ramdisk
-          LIMIT = 20_500_000
-          if gz_sz <= LIMIT:
-              chosen = gz_path
-              method = "gzip -9"
-          elif zst_sz <= LIMIT:
-              chosen = zst_path
-              method = "zstd -19"
-          else:
-              raise RuntimeError(f"Ramdisk still too large! gz={gz_sz}, zst={zst_sz}, limit={LIMIT}")
+          # Repack as root-owned (0:0) cpio + pure LZ4 legacy -9 (REQUIRED to match vendor_ramdisk!)
+          cpio_out = os.path.join(work, "slim.cpio")
+          lz4_out = os.path.join(work, "slim.lz4")
+          subprocess.check_call(f"cd {root} && find . | cpio -o -H newc -R 0:0 --quiet > {cpio_out}", shell=True)
+          subprocess.check_call(f"lz4 -l -9 -f {cpio_out} {lz4_out}", shell=True)
 
-          with open(chosen, "rb") as f:
-              new_rd = f.read()
+          new_rd = open(lz4_out, "rb").read()
           new_rsize = len(new_rd)
-          print(f"Selected {method}: {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) -> combined with vendor_ramdisk = {(new_rsize+11628801)/1048576:.2f} MiB <= 32 MiB OK!")
+          combined = new_rsize + 11628801
+          print(f"Repacked LZ4 legacy = {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) | +vendor = {combined/1048576:.2f} MiB (limit 32.00 MiB)")
+          assert combined < 33554432, f"Combined ramdisk exceeds ABL 32 MiB limit: {combined/1048576:.2f} MiB!"
 
-          # Build clean Android Boot Header v4 matching stock recovery.img exactly:
-          # kernel_size=0, ramdisk_size=new_rsize, os_version=0, header_size=1584, header_version=4, signature_size=0
+          # Build clean Android Boot Header v4 matching stock recovery.img exactly
           new_hdr = bytearray(4096)
           new_hdr[0:8] = b"ANDROID!"
           struct.pack_into("<IIII", new_hdr, 8, 0, new_rsize, 0, 1584)
           struct.pack_into("<I", new_hdr, 40, 4)
-          # signature_size at 1580 stays 0
 
           pad = (-new_rsize) % 4096
           repacked = os.path.join(out_dir, "recovery.img")
@@ -150,7 +154,6 @@ jobs:
               f.write(new_rd)
               f.write(b"\x00" * pad)
 
-          # Add stock-compatible AVB hash footer (Algorithm: NONE, partition_size=100663296)
           avbtool = "/home/runner/twrp/out/host/linux-x86/bin/avbtool"
           if os.path.exists(avbtool):
               subprocess.check_call([

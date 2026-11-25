@@ -3,10 +3,12 @@
 import /init.recovery.qcom_decrypt.rc
 
 on init
-    write /sys/class/backlight/panel0-backlight/brightness 1000
+    write /sys/class/backlight/bkl-bl/brightness 1800
     setprop sys.usb.configfs 1
     setprop prepdecrypt.loglevel 2
     setprop vendor.gatekeeper.is_security_level_spu 0
+    symlink /vendor/etc/vintf/manifest.xml /vendor/manifest.xml
+    symlink /system/etc/vintf/manifest.xml /system/manifest.xml
 
 on property:ro.boot.usbcontroller=*
     setprop sys.usb.controller ${ro.boot.usbcontroller}
@@ -26,8 +28,9 @@ on fs
     install_keyring
 
 on boot
-    # Load Novatek NT36523N touchscreen driver
+    # Load Novatek NT36523N touchscreen driver (firmware in /lib/firmware/novatek_ts_fw.bin)
     insmod /vendor/lib/modules/nvt36523_spi.ko
+    write /sys/class/backlight/bkl-bl/brightness 1800
     setprop crypto.ready 1
 
 on property:crypto.ready=1
