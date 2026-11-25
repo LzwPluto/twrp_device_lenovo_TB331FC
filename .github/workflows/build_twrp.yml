@@ -149,34 +149,37 @@ jobs:
                   if fn not in ("en.xml", "zh_CN.xml"):
                       os.remove(os.path.join(lang_dir, fn))
 
-          # Repack as root-owned (0:0) cpio. Prefer pure LZ4 legacy (matches vendor_ramdisk), but LZ4
-          # compresses much worse than gzip/zstd, so fall back to the smallest candidate that still
-          # fits the ABL combined limit (stock kernel has CONFIG_RD_GZIP=y and CONFIG_RD_ZSTD=y).
+          # Repack as root-owned (0:0) cpio, PURE LZ4 legacy.
+          # This device's kernel only decodes the FIRST compression format of the concatenated
+          # initramfs, so a gzip/zstd recovery ramdisk would be silently dropped and the device
+          # would hang at the first screen. The gzip/zstd sizes below are DIAGNOSTICS ONLY and are
+          # never emitted. If LZ4 overflows the ABL limit, trim more files instead.
           cpio_out = os.path.join(work, "slim.cpio")
           lz4_out = os.path.join(work, "slim.lz4")
           subprocess.check_call(f"cd {root} && find . | cpio -o -H newc -R 0:0 --quiet > {cpio_out}", shell=True)
 
           VENDOR_RD = 11628801          # vendor_ramdisk (vendor_boot) contribution to the ABL total
           ABL_LIMIT = 33554432          # ABL combined ramdisk hard limit
-          RD_MAX = ABL_LIMIT - VENDOR_RD
-          cands = []
           subprocess.check_call(f"lz4 -l -9 -f {cpio_out} {lz4_out}", shell=True)
-          cands.append(("lz4-legacy-9", lz4_out, os.path.getsize(lz4_out)))
           gz_out = os.path.join(work, "slim.gz")
           zst_out = os.path.join(work, "slim.zst")
           subprocess.check_call(f"gzip -9 -c {cpio_out} > {gz_out}", shell=True)
-          cands.append(("gzip-9", gz_out, os.path.getsize(gz_out)))
           subprocess.check_call(f"zstd -19 -T0 -f {cpio_out} -o {zst_out}", shell=True)
-          cands.append(("zstd-19", zst_out, os.path.getsize(zst_out)))
-          for nm, _p, sz in cands:
-              print(f"  candidate {nm:12s} = {sz} bytes ({sz/1048576:.2f} MiB) | +vendor = {(sz+VENDOR_RD)/1048576:.2f} MiB")
-          fitting = [c for c in cands if c[2] <= RD_MAX]
-          assert fitting, "No ramdisk compression fits the ABL limit: " + ", ".join(f"{n}={s}" for n, _p, s in cands)
-          lz4_ok = [c for c in fitting if c[0].startswith("lz4")]
-          chosen_name, chosen_path, new_rsize = lz4_ok[0] if lz4_ok else min(fitting, key=lambda c: c[2])
+          print(f"cpio (uncompressed) = {os.path.getsize(cpio_out)} bytes ({os.path.getsize(cpio_out)/1048576:.2f} MiB)")
+          for nm, p in (("lz4-legacy-9", lz4_out), ("gzip-9 [diag only]", gz_out), ("zstd-19 [diag only]", zst_out)):
+              sz = os.path.getsize(p)
+              print(f"  {nm:20s} = {sz} bytes ({sz/1048576:.2f} MiB) | +vendor = {(sz+VENDOR_RD)/1048576:.2f} MiB")
+
+          new_rsize = os.path.getsize(lz4_out)
           combined = new_rsize + VENDOR_RD
-          print(f"Selected {chosen_name}: {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) | +vendor = {combined/1048576:.2f} MiB (limit 32.00 MiB)")
-          with open(chosen_path, "rb") as f:
+          assert combined <= ABL_LIMIT, (
+              f"LZ4 legacy recovery ramdisk = {new_rsize} bytes, combined with vendor_ramdisk = "
+              f"{combined/1048576:.2f} MiB > {ABL_LIMIT/1048576:.2f} MiB. Trim more files from the "
+              f"ramdisk. Do NOT switch to gzip/zstd: this kernel only decodes the first compression "
+              f"format of the combined initramfs, so the recovery ramdisk would be dropped silently."
+          )
+          print(f"Selected lz4-legacy-9: {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) | +vendor = {combined/1048576:.2f} MiB (limit 32.00 MiB)")
+          with open(lz4_out, "rb") as f:
               new_rd = f.read()
 
           # Build clean Android Boot Header v4 matching stock recovery.img exactly
