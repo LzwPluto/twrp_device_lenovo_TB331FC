@@ -59,6 +59,9 @@ jobs:
         with:
           path: twrp_dt_checkout
 
+      - name: Apply and replay TB331FC Himax release patch
+        run: bash "$GITHUB_WORKSPACE/twrp_dt_checkout/ci/apply-himax.sh" "$HOME/twrp/bootable/recovery"
+
       - name: Copy device tree into TWRP source
         run: |
           mkdir -p ~/twrp/device/lenovo/TB331FC
@@ -76,7 +79,7 @@ jobs:
           TARGET="${{ github.event.inputs.build_target || 'recoveryimage' }}"
           mka "$TARGET" -j$(nproc --all)
 
-      - name: Repack recovery.img for TB331FC ABL (prefer LZ4 legacy, fallback gzip/zstd <= 20.9 MiB + clean v4 header)
+      - name: Repack recovery.img for TB331FC (LZ4 legacy, v4, kernel-free)
         run: |
           python3 - << 'EOF'
           import os, shutil, struct, subprocess
@@ -158,8 +161,8 @@ jobs:
           lz4_out = os.path.join(work, "slim.lz4")
           subprocess.check_call(f"cd {root} && find . | cpio -o -H newc -R 0:0 --quiet > {cpio_out}", shell=True)
 
-          VENDOR_RD = 11628801          # vendor_ramdisk (vendor_boot) contribution to the ABL total
-          ABL_LIMIT = 33554432          # ABL combined ramdisk hard limit
+          RECOVERY_RAMDISK_LIMIT = 31707004  # TB331FC ABL recovery-only limit
+          RECOVERY_PARTITION_SIZE = 104857600
           subprocess.check_call(f"lz4 -l -9 -f {cpio_out} {lz4_out}", shell=True)
           gz_out = os.path.join(work, "slim.gz")
           zst_out = os.path.join(work, "slim.zst")
@@ -168,17 +171,14 @@ jobs:
           print(f"cpio (uncompressed) = {os.path.getsize(cpio_out)} bytes ({os.path.getsize(cpio_out)/1048576:.2f} MiB)")
           for nm, p in (("lz4-legacy-9", lz4_out), ("gzip-9 [diag only]", gz_out), ("zstd-19 [diag only]", zst_out)):
               sz = os.path.getsize(p)
-              print(f"  {nm:20s} = {sz} bytes ({sz/1048576:.2f} MiB) | +vendor = {(sz+VENDOR_RD)/1048576:.2f} MiB")
+              print(f"  {nm:20s} = {sz} bytes ({sz/1048576:.2f} MiB)")
 
           new_rsize = os.path.getsize(lz4_out)
-          combined = new_rsize + VENDOR_RD
-          assert combined <= ABL_LIMIT, (
-              f"LZ4 legacy recovery ramdisk = {new_rsize} bytes, combined with vendor_ramdisk = "
-              f"{combined/1048576:.2f} MiB > {ABL_LIMIT/1048576:.2f} MiB. Trim more files from the "
-              f"ramdisk. Do NOT switch to gzip/zstd: this kernel only decodes the first compression "
-              f"format of the combined initramfs, so the recovery ramdisk would be dropped silently."
-          )
-          print(f"Selected lz4-legacy-9: {new_rsize} bytes ({new_rsize/1048576:.2f} MiB) | +vendor = {combined/1048576:.2f} MiB (limit 32.00 MiB)")
+          assert new_rsize <= RECOVERY_RAMDISK_LIMIT, (new_rsize, RECOVERY_RAMDISK_LIMIT)
+          print(f"Selected lz4-legacy-9: {new_rsize} bytes (budget {RECOVERY_RAMDISK_LIMIT})")
+          for rel in ["twres/languages/zh_CN.xml", "twres/fonts/DroidSansFallback.ttf",
+                      "lib/firmware/Himax_firmware.bin", "vendor/lib/modules/hxchipset.ko"]:
+              assert os.path.isfile(os.path.join(root, rel)), rel
           with open(lz4_out, "rb") as f:
               new_rd = f.read()
 
@@ -196,15 +196,15 @@ jobs:
               f.write(b"\x00" * pad)
 
           avbtool = "/home/runner/twrp/out/host/linux-x86/bin/avbtool"
-          if os.path.exists(avbtool):
-              subprocess.check_call([
-                  avbtool, "add_hash_footer",
-                  "--image", repacked,
-                  "--partition_size", "100663296",
-                  "--partition_name", "recovery",
-                  "--algorithm", "NONE",
-              ])
-              print("Added stock-compatible AVB hash footer (96 MiB, Algorithm NONE)")
+          subprocess.check_call([
+              avbtool, "add_hash_footer",
+              "--image", repacked,
+              "--partition_size", str(RECOVERY_PARTITION_SIZE),
+              "--partition_name", "recovery",
+              "--algorithm", "NONE",
+          ])
+          assert os.path.getsize(repacked) == RECOVERY_PARTITION_SIZE
+          print("Added AVB hash footer (100 MiB partition, Algorithm NONE; not an OEM signature)")
 
           with open(repacked, "rb") as f:
               h = f.read(1600)
