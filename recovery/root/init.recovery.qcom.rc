@@ -29,6 +29,7 @@ on fs
 
 on boot
     # Load Novatek NT36523N touchscreen driver (firmware in /lib/firmware/novatek_ts_fw.bin)
+    insmod /vendor/lib/modules/hxchipset.ko
     insmod /vendor/lib/modules/nvt36523_spi.ko
     write /sys/class/backlight/bkl-bl/brightness 1800
     setprop crypto.ready 1
